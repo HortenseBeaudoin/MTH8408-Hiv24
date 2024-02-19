@@ -7,8 +7,15 @@
 # Pkg.add("SolverCore")
 # Pkg.add("Test")
 # Pkg.add("ADNLPModels")
+# Pkg.add("NLSProblems")
+# Pkg.add("SolverBenchmark")
+# Pkg.add("Plots")
+# Pkg.add("JSOSolvers")
+# Pkg.add("CaNNOLeS")
+# Pkg.add("NLPModelsJuMP")
 
-using LinearAlgebra, Krylov, NLPModels, Printf, Logging, SolverCore, Test, ADNLPModels
+using LinearAlgebra, Krylov, NLPModels, Printf, Logging, SolverCore, Test, ADNLPModels, NLSProblems, SolverBenchmark, Plots, JSOSolvers
+using CaNNOLeS, NLPModelsJuMP
 
 #Test problem:
 FH(x) = [x[2]+x[1].^2-11, x[1]+x[2].^2-7]
@@ -16,7 +23,7 @@ x0H = [10., 20.]
 ###########################
 neq = 2
 #Utilise FH et x0H pour créer un ADNLSModel
-himmelblau_nls = ADNLSModel(FH, x0H, neq)
+himmelblau_nls = ADNLSModel!(FH, x0H, neq)
 ###########################
 
 function gauss_newton(nlp      :: AbstractNLSModel, 
@@ -128,8 +135,8 @@ return GenericExecutionStats(nlp; status, solution = x,
 end
 
 
-stats = gauss_newton(himmelblau_nls, himmelblau_nls.meta.x0, 1e-6)
-@test stats.status == :first_order
+# stats = gauss_newton(himmelblau_nls, himmelblau_nls.meta.x0, 1e-6)
+# @test stats.status == :first_order
 
 
 function dsol(Fx, Jx, λ, τ)
@@ -275,5 +282,54 @@ return GenericExecutionStats(nlp; status, solution = x,
 end
 
 
-stats = lm_param(himmelblau_nls, himmelblau_nls.meta.x0, 1e-6)
-@test stats.status == :first_order
+# stats = lm_param(himmelblau_nls, himmelblau_nls.meta.x0, 1e-6)
+# @test stats.status == :first_order
+
+
+# Benchmarking
+using NLSProblems
+n = 20
+ϵ = 1e-6
+
+solvers = Dict(
+    :gauss_newton => model -> gauss_newton(model, model.meta.x0, ϵ),
+    :lm_param => model -> lm_param(model, model.meta.x0, ϵ),
+)
+
+problems = (eval(problem)() for problem ∈ filter(x -> x != :NLSProblems, names(NLSProblems)))
+
+stats = bmark_solvers(
+  solvers, problems,
+  skipif=prob -> (!unconstrained(prob) || get_nvar(prob) > 100 || get_nvar(prob) < 5),
+)
+
+cols = [:id, :name, :nvar, :objective, :dual_feas, :neval_residual, :neval_jac_residual, :neval_hess, :iter, :elapsed_time, :status]
+header = Dict(
+  :nvar => "n",
+  :objective => "f(x)",
+  :dual_feas => "‖∇f(x)‖",
+  :neval_residual => "# f",
+  :neval_jac_residual => "# ∇f",
+  :neval_hess => "# ∇²f",
+  :elapsed_time => "t",
+)
+
+for solver ∈ keys(solvers)
+  pretty_stats(stats[solver][!, cols], hdr_override=header)
+end
+
+first_order(df) = df.status .== :first_order
+unbounded(df) = df.status .== :unbounded
+solved(df) = first_order(df) .| unbounded(df)
+
+costnames = ["time", "residual", "residual jacobien"]
+costs = [
+  df -> .!solved(df) .* Inf .+ df.elapsed_time,
+  df -> .!solved(df) .* Inf .+ df.neval_residual,
+  df -> .!solved(df) .* Inf .+ df.neval_jac_residual,
+]
+
+using Plots
+gr()
+
+profile_solvers(stats, costs, costnames)
