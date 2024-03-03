@@ -1,20 +1,24 @@
-# using Pkg
-Pkg.add("LinearAlgebra")
-Pkg.add("Krylov")
-Pkg.add("NLPModels")
-Pkg.add("Printf")
-Pkg.add("Logging")
-Pkg.add("SolverCore")
-Pkg.add("Test")
-Pkg.add("ADNLPModels")
-Pkg.add("NLSProblems")
-Pkg.add("SolverBenchmark")
-Pkg.add("Plots")
-Pkg.add("JSOSolvers")
-Pkg.add("CaNNOLeS")
-Pkg.add("NLPModelsJuMP")
+using Pkg
+# Pkg.add("LinearAlgebra")
+# Pkg.add("Krylov")
+# Pkg.add("NLPModels")
+# Pkg.add("Printf")
+# Pkg.add("Logging")
+# Pkg.add("SolverCore")
+# Pkg.add("Test")
+# Pkg.add("ADNLPModels")
+# Pkg.add("NLSProblems")
+# Pkg.add("SolverBenchmark")
+# Pkg.add("Plots")
+# Pkg.add("JSOSolvers")
+# Pkg.add("CaNNOLeS")
+# Pkg.add("NLPModelsJuMP")
+Pkg.add("JuMP")
+Pkg.add("Ipopt")
+Pkg.add("NLPModelsIpopt")
+Pkg.add("Gadfly")
 
-using LinearAlgebra, Krylov, NLPModels, Printf, Logging, SolverCore, Test, ADNLPModels, NLSProblems, SolverBenchmark, Plots, JSOSolvers
+using LinearAlgebra, Krylov, NLPModels, Printf, Logging, SolverCore, Test, ADNLPModels, NLSProblems, SolverBenchmark, JSOSolvers
 using CaNNOLeS, NLPModelsJuMP
 
 #Test problem:
@@ -287,49 +291,199 @@ end
 
 
 # Benchmarking
-using NLSProblems
-n = 20
-ϵ = 1e-6
+# using NLSProblems
+# n = 20
+# ϵ = 1e-6
 
-solvers = Dict(
-    :gauss_newton => model -> gauss_newton(model, model.meta.x0, ϵ),
-    :lm_param => model -> lm_param(model, model.meta.x0, ϵ),
-)
+# solvers = Dict(
+#     :gauss_newton => model -> gauss_newton(model, model.meta.x0, ϵ),
+#     :lm_param => model -> lm_param(model, model.meta.x0, ϵ),
+# )
 
-problems = (eval(problem)() for problem ∈ filter(x -> x != :NLSProblems, names(NLSProblems)))
+# problems = (eval(problem)() for problem ∈ filter(x -> x != :NLSProblems, names(NLSProblems)))
 
-stats = bmark_solvers(
-  solvers, problems,
-  skipif=prob -> (!unconstrained(prob) || get_nvar(prob) > 100 || get_nvar(prob) < 5),
-)
+# stats = bmark_solvers(
+#   solvers, problems,
+#   skipif=prob -> (!unconstrained(prob) || get_nvar(prob) > 100 || get_nvar(prob) < 5),
+# )
 
-cols = [:id, :name, :nvar, :objective, :dual_feas, :neval_residual, :neval_jac_residual, :neval_hess, :iter, :elapsed_time, :status]
-header = Dict(
-  :nvar => "n",
-  :objective => "f(x)",
-  :dual_feas => "‖∇f(x)‖",
-  :neval_residual => "# f",
-  :neval_jac_residual => "# ∇f",
-  :neval_hess => "# ∇²f",
-  :elapsed_time => "t",
-)
+# cols = [:id, :name, :nvar, :objective, :dual_feas, :neval_residual, :neval_jac_residual, :neval_hess, :iter, :elapsed_time, :status]
+# header = Dict(
+#   :nvar => "n",
+#   :objective => "f(x)",
+#   :dual_feas => "‖∇f(x)‖",
+#   :neval_residual => "# f",
+#   :neval_jac_residual => "# ∇f",
+#   :neval_hess => "# ∇²f",
+#   :elapsed_time => "t",
+# )
 
-for solver ∈ keys(solvers)
-  pretty_stats(stats[solver][!, cols], hdr_override=header)
+# for solver ∈ keys(solvers)
+#   pretty_stats(stats[solver][!, cols], hdr_override=header)
+# end
+
+# first_order(df) = df.status .== :first_order
+# unbounded(df) = df.status .== :unbounded
+# solved(df) = first_order(df) .| unbounded(df)
+
+# costnames = ["time", "residual", "residual jacobien"]
+# costs = [
+#   df -> .!solved(df) .* Inf .+ df.elapsed_time,
+#   df -> .!solved(df) .* Inf .+ df.neval_residual,
+#   df -> .!solved(df) .* Inf .+ df.neval_jac_residual,
+# ]
+
+# using Plots
+# gr()
+
+# profile_solvers(stats, costs, costnames)
+
+
+using JuMP, NLPModels, Ipopt, NLPModelsIpopt
+# Create JuMP model, using Ipopt as the solver
+rocket = Model(optimizer_with_attributes(Ipopt.Optimizer, "print_level" => 0))
+
+# Constants
+# Note that all parameters in the model have been normalized
+# to be dimensionless. See the COPS3 paper for more info.
+h_0 = 1    # Initial height
+v_0 = 0    # Initial velocity
+m_0 = 1    # Initial mass
+g_0 = 1    # Gravity at the surface
+
+T_c = 3.5  # Used for thrust
+h_c = 500  # Used for drag
+v_c = 620  # Used for drag
+m_c = 0.6  # Fraction of initial mass left at end
+
+c     = 0.5 * sqrt(g_0 * h_0)  # Thrust-to-fuel mass
+m_f   = m_c * m_0            # Final mass
+D_c   = 0.5 * v_c * m_0 / g_0    # Drag scaling
+T_max = T_c * g_0 * m_0        # Maximum thrust
+
+n = 800   # Time steps
+
+@variables(rocket, begin
+    Δt ≥ 0, (start = 1/n) # Time step
+    # State variables
+    v[1:n] ≥ 0            # Velocity
+    h[1:n] ≥ h_0          # Height
+    m_f ≤ m[1:n] ≤ m_0    # Mass
+    # Control
+    0 ≤ T[1:n] ≤ T_max    # Thrust
+end)
+
+# Objective: maximize altitude at end of time of flight
+@objective(rocket, Max, h[n])
+
+# Initial conditions
+@constraints(rocket, begin
+    v[1] == v_0
+    h[1] == h_0
+    m[1] == m_0
+    m[n] == m_f
+end)
+
+# Forces
+# Drag(h,v) = Dc v^2 exp( -hc * (h - h0) / h0 )
+@NLexpression(rocket, drag[j = 1:n], D_c * (v[j]^2) * exp(-h_c * (h[j] - h_0) / h_0))
+# Grav(h)   = go * (h0 / h)^2
+@NLexpression(rocket, grav[j = 1:n], g_0 * (h_0 / h[j])^2)
+# Time of flight
+@NLexpression(rocket, t_f, Δt * n)
+
+# Dynamics
+for j in 2:n
+    # h' = v
+    
+    # Rectangular integration
+    # @NLconstraint(rocket, h[j] == h[j - 1] + Δt * v[j - 1])
+    
+    # Trapezoidal integration
+    @NLconstraint(rocket,
+        h[j] == h[j - 1] + 0.5 * Δt * (v[j] + v[j - 1]))
+
+    # v' = (T-D(h,v))/m - g(h)
+    
+    # Rectangular integration
+    # @NLconstraint(rocket, v[j] == v[j - 1] + Δt *(
+    #                 (T[j - 1] - drag[j - 1]) / m[j - 1] - grav[j - 1]))
+    
+    # Trapezoidal integration
+    @NLconstraint(rocket,
+        v[j] == v[j-1] + 0.5 * Δt * (
+            (T[j] - drag[j] - m[j] * grav[j]) / m[j] +
+            (T[j - 1] - drag[j - 1] - m[j - 1] * grav[j - 1]) / m[j - 1]))
+
+    # m' = -T/c
+
+    # Rectangular integration
+    # @NLconstraint(rocket, m[j] == m[j - 1] - Δt * T[j - 1] / c)
+    
+    # Trapezoidal integration
+    @NLconstraint(rocket,
+        m[j] == m[j - 1] - 0.5 * Δt * (T[j] + T[j-1]) / c)
 end
 
-first_order(df) = df.status .== :first_order
-unbounded(df) = df.status .== :unbounded
-solved(df) = first_order(df) .| unbounded(df)
 
-costnames = ["time", "residual", "residual jacobien"]
-costs = [
-  df -> .!solved(df) .* Inf .+ df.elapsed_time,
-  df -> .!solved(df) .* Inf .+ df.neval_residual,
-  df -> .!solved(df) .* Inf .+ df.neval_jac_residual,
-]
+# Solve for the control and state
+println("Solving...")
+status = optimize!(rocket)
 
-using Plots
-gr()
+# Display results
+println("Solver status: ", status)
+println("Max height: ", objective_value(rocket))
 
-profile_solvers(stats, costs, costnames)
+
+value.(h)[n]
+
+# Can visualize the state and control variables
+using Gadfly
+
+h_plot = Gadfly.plot(x = (1:n) * value.(Δt), y = value.(h)[:], Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Altitude"))
+m_plot = Gadfly.plot(x = (1:n) * value.(Δt), y = value.(m)[:], Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Mass"))
+v_plot = Gadfly.plot(x = (1:n) * value.(Δt), y = value.(v)[:], Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Velocity"))
+T_plot = Gadfly.plot(x = (1:n) * value.(Δt), y = value.(T)[:], Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Thrust"))
+draw(SVG(6inch, 6inch), vstack(hstack(h_plot, m_plot), hstack(v_plot, T_plot)))
+
+j_h = value.(h)
+j_v = value.(v)
+j_m = value.(m)
+j_T = value.(T)
+j_dt = value(Δt)
+
+using NLPModels, LinearAlgebra, NLPModelsJuMP, NLPModelsIpopt, Ipopt
+
+nlp_rocket = MathOptNLPModel(rocket)
+stats = ipopt(nlp_rocket)
+
+nlp_dt = stats.solution[1]
+nlp_v = stats.solution[2:801]
+nlp_h = stats.solution[802:1601]
+nlp_m = stats.solution[1602:2401]
+nlp_t = stats.solution[2402:3201]
+
+print(nlp_t)
+
+n = 800
+nh_plot = Gadfly.plot(x = (1:n) * nlp_dt, y = nlp_h, Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Altitude"))
+nm_plot = Gadfly.plot(x = (1:n) * nlp_dt, y = nlp_m, Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Mass"))
+nv_plot = Gadfly.plot(x = (1:n) * nlp_dt, y = nlp_v, Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Velocity"))
+nT_plot = Gadfly.plot(x = (1:n) * nlp_dt, y = nlp_t, Geom.line,
+                Guide.xlabel("Time (s)"), Guide.ylabel("Thrust"))
+draw(SVG(6inch, 6inch), vstack(hstack(h_plot, m_plot), hstack(v_plot, T_plot)))
+
+diff_dt = j_dt - nlp_dt
+diff_v = j_v - nlp_v
+diff_h = j_h - nlp_h
+diff_m = j_m - nlp_m
+diff_t = j_T - nlp_t
+
+print(diff_t)
