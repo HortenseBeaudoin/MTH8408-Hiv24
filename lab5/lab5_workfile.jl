@@ -39,7 +39,7 @@ himmelblau_quad = quad_penalty_adnlp(himmelblau, 1)
 #Ajouter au moins un autre test similaire avec des contraintes.
 n = 10
 nlp_test1 = ADNLPModel(x->dot(x, x), zeros(n), x->[sum(x) - 1], zeros(1), zeros(1))
-nlp_test1_quad = quad_penalty_adnlp(nlp_test, 1)
+nlp_test1_quad = quad_penalty_adnlp(nlp_test1, 1)
 @test nlp_test1_quad.meta.ncon == 0
 @test obj(nlp_test1_quad, zeros(n)) == 0.5
 
@@ -61,6 +61,15 @@ himmelblau2_quad = quad_penalty_adnlp(himmelblau2, 1)
 @test obj(himmelblau2_quad, zeros(2)) == 170.5
 
 # EXERCICE KKT
+
+function KKT_eq_constraint(nlp :: AbstractNLPModel, x, λ)
+  if isapprox(grad(nlp, x), dot(jac(nlp, x),λ) ; atol=1e-6) || isapprox(cons(nlp, x), 0 ; atol=1e-6)
+    return 1
+  else
+    return 0
+  end
+end
+
 
 function quad_penalty(nlp      :: AbstractNLPModel,
     x        :: AbstractVector; 
@@ -154,15 +163,23 @@ return GenericExecutionStats(nlp, status = status, solution = x,
                primal_feas = normcx,
                dual_feas = normdual,
                iter = iter, 
+               multipliers = stats.multipliers,
                elapsed_time = el_time,
                solver_specific = Dict(:penalty => ρ))
 end
 
-# #Faire des tests pour vérifier que ça fonctionne.
-# stats = quad_penalty(himmelblau, x0H)
-# @test stats.status == :first_order
-# @test stats.solution ≈ [1.0008083416169895, 2.709969135758311] atol=1e-2
-# @test norm(cons(himmelblau, stats.solution)) ≈ 0. atol=1e-3
+#Faire des tests pour vérifier que ça fonctionne.
+stats = quad_penalty(himmelblau, x0H)
+@test stats.status == :first_order
+@test stats.solution ≈ [1.0008083416169895, 2.709969135758311] atol=1e-2
+@test norm(cons(himmelblau, stats.solution)) ≈ 0. atol=1e-3
+
+# Test sur les conditions de KKT À COMPLÉTER
+print(stats.solution)
+print(stats.iter)
+print(stats.multipliers)
+
+KKT_eq_constraint(himmelblau, stats.solution, stats.multipliers)
 
 
 # #Tests supplémentaires.
@@ -225,99 +242,104 @@ end
 
 # BENCHMARKING
 
-using ADNLPModels
-using OptimizationProblems, OptimizationProblems.ADNLPProblems
-using LinearAlgebra
-using SolverCore, SolverBenchmark
-using ADNLPModels, NLPModels
-using OptimizationProblems, OptimizationProblems.ADNLPProblems
-using JSOSolvers
+# using ADNLPModels
+# using OptimizationProblems, OptimizationProblems.ADNLPProblems
+# using LinearAlgebra
+# using SolverCore, SolverBenchmark
+# using ADNLPModels, NLPModels
+# using OptimizationProblems, OptimizationProblems.ADNLPProblems
+# using JSOSolvers
 
-n = 20
-solvers = solvers = Dict(
-  :qpenal => model -> quad_penalty(model, model.meta.x0),
-)
+# n = 20
+# solvers = solvers = Dict(
+#   :qpenal => model -> quad_penalty(model, model.meta.x0),
+# )
 
-ad_problems = (eval(Meta.parse(problem))(;n) for problem ∈ OptimizationProblems.meta[!, :name])
+# ad_problems = (eval(Meta.parse(problem))(;n) for problem ∈ OptimizationProblems.meta[!, :name])
 
-stats = bmark_solvers(
-  solvers, ad_problems,
-  skipif=prob -> (unconstrained(prob) || get_nvar(prob) > 100 || get_nvar(prob) < 5),
-)
+# stats = bmark_solvers(
+#   solvers, ad_problems,
+#   skipif=prob -> (unconstrained(prob) || get_nvar(prob) > 100 || get_nvar(prob) < 5),
+# )
 
-cols = [:id, :name, :nvar, :neval_cons, :neval_obj, :neval_grad, :neval_hess, :neval_ :iter, :elapsed_time, :status]
-header = Dict(
-  :nvar => "n",
-  :neval_cons => "# cons",
-  :neval_obj => "# f",
-  :neval_grad => "# ∇f",
-  :neval_hess => "# ∇²f",
-  :elapsed_time => "t",
-)
+# cols = [:id, :name, :nvar, :neval_cons, :neval_obj, :neval_grad, :neval_hess, :neval_ :iter, :elapsed_time, :status]
+# header = Dict(
+#   :nvar => "n",
+#   :neval_cons => "# cons",
+#   :neval_obj => "# f",
+#   :neval_grad => "# ∇f",
+#   :neval_hess => "# ∇²f",
+#   :iter => "iter",
+#   :elapsed_time => "t",
+# )
 
-for solver ∈ keys(solvers)
-  pretty_stats(stats[solver][!, cols], hdr_override=header)
-end
+# for solver ∈ keys(solvers)
+#   pretty_stats(stats[solver][!, cols], hdr_override=header)
+# end
 
 
 # EXERCICE 2
 
-# function cv_model(n :: Int)
+function cv_model(n :: Int)
 
-#     domain = (0,1) # set the domain
-#     partition = n
-#     model = CartesianDiscreteModel(domain,partition) # set discretization
+    domain = (0,1) # set the domain
+    partition = n
+    model = CartesianDiscreteModel(domain,partition) # set discretization
       
-#     labels = get_face_labeling(model)
-#     add_tag_from_tags!(labels,"diri1",[2])
-#     add_tag_from_tags!(labels,"diri0",[1]) # boundary conditions
+    labels = get_face_labeling(model)
+    add_tag_from_tags!(labels,"diri1",[2])
+    add_tag_from_tags!(labels,"diri0",[1]) # boundary conditions
   
-#     order=1
-#     valuetype=Float64
-#     reffe = ReferenceFE(lagrangian, valuetype, order)
-#     V0 = TestFESpace(model, reffe; conformity=:H1, dirichlet_tags=["diri0","diri1"])
-#     U = TrialFESpace(V0,[0., exp(1)-exp(-2)])
+    order=1
+    valuetype=Float64
+    reffe = ReferenceFE(lagrangian, valuetype, order)
+    V0 = TestFESpace(model, reffe; conformity=:H1, dirichlet_tags=["diri0","diri1"])
+    U = TrialFESpace(V0,[0., exp(1)-exp(-2)])
   
-#     trian = Triangulation(model)
-#     degree = 2
-#     dΩ = Measure(trian,degree) # integration machinery
+    trian = Triangulation(model)
+    degree = 2
+    dΩ = Measure(trian,degree) # integration machinery
   
-#     # Our objective function
-#     w(x) = exp(x[1])
-#     function f(y)
-#       ∫((∇(y)⊙∇(y) + 2 * y * y) * w) * dΩ
-#     end
+    # Our objective function
+    w(x) = exp(x[1])
+    function f(y)
+      ∫((∇(y)⊙∇(y) + 2 * y * y) * w) * dΩ
+    end
   
-#     xin = zeros(Gridap.FESpaces.num_free_dofs(U))
-#     nlp = GridapPDENLPModel(xin, f, trian, U, V0)
-#     return nlp
-#   end
+    xin = zeros(Gridap.FESpaces.num_free_dofs(U))
+    nlp = GridapPDENLPModel(xin, f, trian, U, V0)
+    return nlp
+  end
 
-# n = 16
-# stats = ipopt(cv_model(n))
-# solu = vcat(0, stats.solution, ℯ-ℯ^(-2))
-# print(solu)
+n = 16
+stats = ipopt(cv_model(n))
+solu = vcat(0, stats.solution, ℯ-ℯ^(-2))
+print(solu)
 
 
-# sol = []
-# for n in [8, 16, 32, 64, 128]
-#     stats = ipopt(cv_model(n), print_level = 0)
-#     solu = vcat(0, stats.solution, ℯ-ℯ^(-2))
-#     push!(sol, solu)
-# end
-# sol[1]
+sol = []
+for n in [8, 16, 32, 64, 128]
+    stats = ipopt(cv_model(n), print_level = 0)
+    solu = vcat(0, stats.solution, ℯ-ℯ^(-2))
+    push!(sol, solu)
+end
+sol[1]
 
-# x = []
-# for n in [8, 16, 32, 64, 128]
-#     r = collect(LinRange(0, 1, n+1))
-#     push!(x, r)
-# end
+x = []
+for n in [8, 16, 32, 64, 128]
+    r = collect(LinRange(0, 1, n+1))
+    push!(x, r)
+end
 
-# using Plots
-# plot(x, sol, label=["n=8" "n=16" "n=32" "n=64" "n=128"])
+using Plots
+plot(x, sol, label=["n=8" "n=16" "n=32" "n=64" "n=128"])
 
-# t = x[5]
-# val = ℯ*ones(length(t))
-# y = val.^t - val.^(-2*t)
-# plot!(t, y, label=["x(t)"])
+t = x[5]
+val = ℯ*ones(length(t))
+y = val.^t - val.^(-2*t)
+plot!(t, y, label=["x(t)"])
 
+print("Valeur optimale:")
+print(ℯ^3-2*ℯ^(-3)+1)
+print()
+print("\nValeur à n=8")
